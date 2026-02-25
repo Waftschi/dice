@@ -1,33 +1,42 @@
 <!doctype html>
-<html class="no-js" lang="">
-
+<html lang="de">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title></title>
-  <link rel="stylesheet" href="css/style.css">
-  <meta name="description" content="">
-
-  <meta property="og:title" content="">
-  <meta property="og:type" content="">
-  <meta property="og:url" content="">
-  <meta property="og:image" content="">
-  <meta property="og:image:alt" content="">
-
-  <link rel="icon" href="/favicon.ico" sizes="any">
-  <link rel="icon" href="/icon.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icon.png">
-
-  <link rel="manifest" href="site.webmanifest">
-  <meta name="theme-color" content="#fafafa">
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Würfelaugen zählen – Webcam</title>
+  <style>
+    body { font-family: system-ui; padding: 20px; }
+    video, canvas { border:1px solid #ddd; border-radius:12px; }
+    .row { display:flex; gap:20px; flex-wrap:wrap; }
+    button { padding:8px 16px; margin-right:10px; }
+    .status { margin-left:20px; padding:4px 12px; border-radius:6px; font-size:14px; }
+    .status.active { background:#d4edda; color:#155724; }
+    .status.inactive { background:#f8d7da; color:#721c24; }
+    .status.detected { background:#fff3cd; color:#856404; }
+  </style>
 </head>
-
 <body>
 
-  <!-- Add your site or application content here -->
-  <p>Hello world! This is HTML5 Boilerplate.</p>
-  <script src="js/app.js"></script>
+<h2>Würfelaugen zählen (Webcam Snapshot)</h2>
+
+<div class="row">
+  <video id="video" width="480" height="360" autoplay playsinline></video>
+  <canvas id="canvas" width="480" height="360"></canvas>
+</div>
+
+<div style="margin-top:15px;">
+  <button id="autoToggle">Auto-Erkennung AN</button>
+  <button id="snap">Manueller Snapshot</button>
+  <button id="reset">Reset</button>
+</div>
+<div style="margin-top:10px;">
+  <span class="status inactive" id="autoStatus">Auto-Modus: AUS</span>
+  <span class="status" id="cupStatus" style="display:none;">Pips erkannt</span>
+  <span style="margin-left:20px;">Gesamt Pips: <b id="count">-</b></span>
+</div>
+
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script src="js/app.js"></script>
 
 </body>
-
 </html>

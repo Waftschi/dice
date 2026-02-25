@@ -21,7 +21,7 @@ const server = http.createServer((req, res) => {
 
   let filePath = '.' + req.url;
   if (filePath === './') {
-    filePath = './app.html';
+    filePath = './index.html';
   }
 
   const extname = String(path.extname(filePath)).toLowerCase();
@@ -45,5 +45,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}/`);
-  console.log(`Open http://localhost:${PORT}/app.html in your browser`);
+  console.log(`Open http://localhost:${PORT}/ in your browser`);
 });
