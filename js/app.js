@@ -118,7 +118,7 @@ function displayExtractedDice() {
 
     const info = document.createElement('div');
     info.className = 'info';
-    info.textContent = `Würfel #${dice.id} (${dice.width}×${dice.height})`;
+    info.textContent = `Würfel #${dice.id} | ${dice.pips} Pips | ${dice.width}×${dice.height}px`;
 
     // Download Button
     const downloadBtn = document.createElement('button');
@@ -363,19 +363,7 @@ function findPurpleDiceWithWhiteDots() {
 
   const src = cv.imread(canvas);
 
-  // 1. ERST Kontrast-Bild erstellen - Erkenne nur WEISSE Pips
-  const srcGray = new cv.Mat();
-  cv.cvtColor(src, srcGray, cv.COLOR_RGBA2GRAY);
-
-  // Hoher fester Threshold um nur weiße Pips zu erkennen (schwarze Pips im Ergebnis)
-  const contrastImage = new cv.Mat();
-  cv.threshold(srcGray, contrastImage, 200, 255, cv.THRESH_BINARY_INV); // 200 = nur sehr helle Pixel
-
-  console.log("✅ Kontrast-Bild (Threshold 200 für weiße Pips) erstellt");
-
-  srcGray.delete();
-
-  // 2. Finde das grüne Brett auf Original-Bild
+  // 1. Finde das grüne Brett auf Original-Bild
   const boardRect = findGreenBoard(src);
 
   if (!boardRect) {
@@ -454,7 +442,9 @@ function findPurpleDiceWithWhiteDots() {
   strongErodeKernel.delete();
   strongDilateKernel.delete();
 
-  // Prüfe ALLE lila Bereiche
+  // PHASE 1: Sammle alle potenziellen Würfel-Rechtecke
+  const candidateDice = [];
+
   for (let i = 0; i < totalContours; i++) {
     const cnt = contours.get(i);
     const area = cv.contourArea(cnt);
@@ -481,7 +471,7 @@ function findPurpleDiceWithWhiteDots() {
       continue;
     }
 
-    // Größenfilter (reduziert um kleinere Würfel nach Erosion zu behalten)
+    // Größenfilter
     if (area < 20) {
       console.log(`[Kontur ${kontourNr}] → Gefiltert: Zu klein (${Math.round(area)}px < 20px)`);
       continue;
@@ -492,7 +482,7 @@ function findPurpleDiceWithWhiteDots() {
       continue;
     }
 
-    // Warnung bei verdächtig großen Würfeln (könnten 2+ Würfel sein)
+    // Warnung bei verdächtig großen Würfeln
     if (area > 3000) {
       console.log(`[Kontur ${kontourNr}] ⚠️ WARNUNG: Verdächtig groß (${Math.round(area)}px) - könnte mehrere Würfel sein!`);
     }
@@ -505,7 +495,7 @@ function findPurpleDiceWithWhiteDots() {
     }
 
     // Extrahiere Region mit großzügigem Padding (15% auf jeder Seite)
-    const padding = 0.15; // 15% Padding
+    const padding = 0.15;
     const padX = Math.round(rect.width * padding);
     const padY = Math.round(rect.height * padding);
 
@@ -523,7 +513,7 @@ function findPurpleDiceWithWhiteDots() {
 
       // Suche nach weißen Punkten in diesem Bereich
       const whiteMask = new cv.Mat();
-      cv.threshold(roiGray, whiteMask, 180, 255, cv.THRESH_BINARY); // Höherer Threshold = nur richtig helle/weiße Pixel
+      cv.threshold(roiGray, whiteMask, 180, 255, cv.THRESH_BINARY);
 
       // Zähle weiße Pixel
       const whitePixels = cv.countNonZero(whiteMask);
@@ -535,78 +525,16 @@ function findPurpleDiceWithWhiteDots() {
       if (whitePercent > 2.0 && whitePercent < 25) {
         diceFound++;
 
-        // ZÄHLE SCHWARZE PUNKTE (Pips) im Kontrast-Bild
-        const contrastROI = contrastImage.roi(new cv.Rect(x, y, w, h));
-
-        // Finde schwarze Konturen (Pips)
-        const contoursROI = new cv.MatVector();
-        const hierarchyROI = new cv.Mat();
-        cv.findContours(contrastROI, contoursROI, hierarchyROI, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-
-        let pipCount = 0;
-        // Einfache Größenfilter (ohne Skalierung da wir auf Original-Bild arbeiten)
-        const minArea = 10; // Kleine Mindestgröße
-        const maxArea = 500; // Maximale Pip-Größe
-
-        console.log(`   → Pip-Suche: ${contoursROI.size()} schwarze Konturen in ${w}x${h}px ROI`);
-
-        for (let p = 0; p < contoursROI.size(); p++) {
-          const cntPip = contoursROI.get(p);
-          const areaPip = cv.contourArea(cntPip);
-
-          if (areaPip < minArea) {
-            console.log(`      Pip ${p}: Area=${Math.round(areaPip)} → Zu klein`);
-            continue;
-          }
-
-          if (areaPip > maxArea) {
-            console.log(`      Pip ${p}: Area=${Math.round(areaPip)} → Zu groß`);
-            continue;
-          }
-
-          const periPip = cv.arcLength(cntPip, true);
-          if (periPip <= 0) continue;
-
-          const circularityPip = (4 * Math.PI * areaPip) / (periPip * periPip);
-
-          // Lockere Circularität für verschiedene Pip-Formen
-          if (circularityPip < 0.3) {
-            console.log(`      Pip ${p}: Area=${Math.round(areaPip)} Circ=${circularityPip.toFixed(2)} → Zu eckig`);
-            continue;
-          }
-
-          pipCount++;
-          console.log(`      ✓ Pip ${pipCount}: Area=${Math.round(areaPip)} Circ=${circularityPip.toFixed(2)}`);
-        }
-
-        console.log(`   → Resultat: ${pipCount} schwarze Pips gefunden`);
-
-        // Cleanup Pip-Erkennung
-        contrastROI.delete();
-        contoursROI.delete();
-        hierarchyROI.delete();
-
-        // Speichere Würfel-Daten für späteres Zeichnen
-        let color = "lime";
-        let warning = "";
-        if (area > 3000) {
-          color = "orange"; // Orange = verdächtig groß
-          warning = " ⚠️ KÖNNTE 2+ WÜRFEL SEIN";
-        }
-
-        totalPips += pipCount; // Zur Gesamtsumme hinzufügen
-
-        detectedDice.push({
+        // Speichere Würfel-Kandidat für Pip-Analyse
+        candidateDice.push({
           rect: rect,
           extendedRect: { x: x, y: y, w: w, h: h },
-          pipCount: pipCount,
-          diceNumber: diceFound,
           kontourNumber: kontourNr,
           area: area,
-          color: color
+          whitePercent: whitePercent
         });
 
-        console.log(`[Kontur ${kontourNr}] ✅✅✅ WÜRFEL #${diceFound}: ${Math.round(area)}px, ${whitePercent.toFixed(1)}% weiß, ${pipCount} PIPS${warning}`);
+        console.log(`[Kontur ${kontourNr}] ✅ WÜRFEL-KANDIDAT #${diceFound}: ${Math.round(area)}px, ${whitePercent.toFixed(1)}% weiß`);
       } else {
         console.log(`[Kontur ${kontourNr}] → Gefiltert: Weiße Pixel ${whitePercent.toFixed(1)}% außerhalb 2-25% (keine deutlichen Punkte)`);
       }
@@ -616,6 +544,129 @@ function findPurpleDiceWithWhiteDots() {
       whiteMask.delete();
     } catch(e) {
       console.error('Fehler bei ROI-Verarbeitung:', e);
+    }
+  }
+
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`📊 PHASE 1 - Würfel-Kandidaten gefunden: ${candidateDice.length}`);
+  console.log(`${'='.repeat(60)}\n`);
+
+  // PHASE 2: Analysiere jeden Würfel-Kandidaten einzeln mit ADAPTIVE THRESHOLDING
+  diceFound = 0; // Reset für finale Zählung
+  extractedDiceImages = []; // Reset der Würfel-Bilder
+
+  for (let candidate of candidateDice) {
+    diceFound++;
+    const { rect, extendedRect, kontourNumber, area, whitePercent } = candidate;
+
+    console.log(`\n[WÜRFEL #${diceFound}] Analysiere ausgeschnittenes Bild (${extendedRect.w}x${extendedRect.h}px)...`);
+
+    try {
+      // Schneide Würfel aus
+      const diceROI = src.roi(new cv.Rect(extendedRect.x, extendedRect.y, extendedRect.w, extendedRect.h));
+
+      // SPEICHERE WÜRFEL-BILD für Anzeige
+      const diceCanvas = document.createElement('canvas');
+      diceCanvas.width = extendedRect.w;
+      diceCanvas.height = extendedRect.h;
+      cv.imshow(diceCanvas, diceROI);
+      const diceImageURL = diceCanvas.toDataURL('image/png');
+
+      const diceGray = new cv.Mat();
+      cv.cvtColor(diceROI, diceGray, cv.COLOR_RGBA2GRAY);
+
+      // ADAPTIVE THRESHOLDING für bessere Pip-Erkennung
+      const adaptiveBinary = new cv.Mat();
+      cv.adaptiveThreshold(
+        diceGray,
+        adaptiveBinary,
+        255,
+        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv.THRESH_BINARY_INV,
+        11, // Blockgröße
+        2   // Konstante
+      );
+
+      // Morphologie zur Rauschunterdrückung
+      const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(2, 2));
+      const cleanedBinary = new cv.Mat();
+      cv.morphologyEx(adaptiveBinary, cleanedBinary, cv.MORPH_OPEN, morphKernel);
+
+      // Finde Pip-Konturen
+      const pipContours = new cv.MatVector();
+      const pipHierarchy = new cv.Mat();
+      cv.findContours(cleanedBinary, pipContours, pipHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+      let pipCount = 0;
+      const minPipArea = 10;
+      const maxPipArea = 800;
+
+      console.log(`   → Gefundene Konturen: ${pipContours.size()}`);
+
+      for (let p = 0; p < pipContours.size(); p++) {
+        const pipCnt = pipContours.get(p);
+        const pipArea = cv.contourArea(pipCnt);
+
+        if (pipArea < minPipArea || pipArea > maxPipArea) {
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} → Außerhalb ${minPipArea}-${maxPipArea}`);
+          continue;
+        }
+
+        const pipPeri = cv.arcLength(pipCnt, true);
+        if (pipPeri <= 0) continue;
+
+        const pipCircularity = (4 * Math.PI * pipArea) / (pipPeri * pipPeri);
+
+        if (pipCircularity < 0.3) {
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)} → Zu eckig`);
+          continue;
+        }
+
+        pipCount++;
+        console.log(`      ✓ Pip ${pipCount}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)}`);
+      }
+
+      console.log(`   → Resultat: ${pipCount} Pips erkannt`);
+      totalPips += pipCount;
+
+      // Speichere für Zeichnen
+      let color = "lime";
+      if (area > 3000) {
+        color = "orange";
+      }
+
+      detectedDice.push({
+        rect: rect,
+        extendedRect: extendedRect,
+        pipCount: pipCount,
+        diceNumber: diceFound,
+        kontourNumber: kontourNumber,
+        area: area,
+        color: color
+      });
+
+      // Speichere Würfel-Bild für die Seitenleiste
+      extractedDiceImages.push({
+        id: diceFound,
+        image: diceImageURL,
+        width: extendedRect.w,
+        height: extendedRect.h,
+        pips: pipCount
+      });
+
+      console.log(`[WÜRFEL #${diceFound}] ✅ Fertig: ${pipCount} Pips`);
+
+      // Cleanup
+      diceROI.delete();
+      diceGray.delete();
+      adaptiveBinary.delete();
+      cleanedBinary.delete();
+      morphKernel.delete();
+      pipContours.delete();
+      pipHierarchy.delete();
+
+    } catch(e) {
+      console.error(`Fehler bei Würfel #${diceFound} Analyse:`, e);
     }
   }
 
@@ -651,7 +702,6 @@ function findPurpleDiceWithWhiteDots() {
   }
 
   // Cleanup
-  contrastImage.delete();
   src.delete();
   hsv.delete();
   lowerPurple1.delete();
@@ -682,6 +732,9 @@ function findPurpleDiceWithWhiteDots() {
 
   diceCountEl.textContent = diceFound;
   countEl.textContent = totalPips;
+
+  // Zeige extrahierte Würfel in der Seitenleiste
+  displayExtractedDice();
 
   return diceFound;
 }
