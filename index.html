@@ -106,7 +106,16 @@
     <div class="row">
       <img id="testImage" src="img/dices_test.jpg">
       <video id="video" autoplay playsinline class="webcam-only"></video>
-      <canvas id="canvas"></canvas>
+      <div style="display: flex; gap: 20px;">
+        <div>
+          <h4 style="margin: 0 0 10px 0; font-size: 14px;">Original mit Markierungen</h4>
+          <canvas id="canvas"></canvas>
+        </div>
+        <div>
+          <h4 style="margin: 0 0 10px 0; font-size: 14px;">Perspektivisch korrigiert</h4>
+          <canvas id="canvasCorrected"></canvas>
+        </div>
+      </div>
     </div>
 
     <div style="margin-top:10px;" class="webcam-only">

@@ -5,6 +5,8 @@ const testImage = document.getElementById("testImage");
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
+const canvasCorrected = document.getElementById("canvasCorrected");
+const ctxCorrected = canvasCorrected.getContext("2d");
 const loadTestImageBtn = document.getElementById("loadTestImage");
 const toggleCameraBtn = document.getElementById("toggleCamera");
 const saveSnapshotBtn = document.getElementById("saveSnapshot");
@@ -525,13 +527,14 @@ function findPurpleDiceWithWhiteDots() {
       if (whitePercent > 2.0 && whitePercent < 25) {
         diceFound++;
 
-        // Speichere Würfel-Kandidat für Pip-Analyse
+        // Speichere Würfel-Kandidat für Pip-Analyse (mit Kontur für Perspektiv-Korrektur)
         candidateDice.push({
           rect: rect,
           extendedRect: { x: x, y: y, w: w, h: h },
           kontourNumber: kontourNr,
           area: area,
-          whitePercent: whitePercent
+          whitePercent: whitePercent,
+          contour: cnt.clone() // Speichere Kontur für Perspektiv-Korrektur
         });
 
         console.log(`[Kontur ${kontourNr}] ✅ WÜRFEL-KANDIDAT #${diceFound}: ${Math.round(area)}px, ${whitePercent.toFixed(1)}% weiß`);
@@ -565,52 +568,182 @@ function findPurpleDiceWithWhiteDots() {
       // Schneide Würfel aus (vollständig für Anzeige)
       const diceROI = src.roi(new cv.Rect(extendedRect.x, extendedRect.y, extendedRect.w, extendedRect.h));
 
-      // ZENTRAL-CROP: Nehme nur innere 90% für Pip-Analyse (nur Oberseite)
-      const cropPercent = 0.90; // 90% des Bereichs (vergrößert von 75%)
-      const cropMargin = (1 - cropPercent) / 2; // 5% Rand auf jeder Seite
+      // PERSPEKTIV-KORREKTUR: Nutze die bereits gefundene lila Kontur
+      console.log(`   → Versuche Perspektiv-Korrektur mit lila Kontur...`);
 
-      const cropX = Math.round(extendedRect.w * cropMargin);
-      const cropY = Math.round(extendedRect.h * cropMargin);
-      const cropW = Math.round(extendedRect.w * cropPercent);
-      const cropH = Math.round(extendedRect.h * cropPercent);
+      let topFaceROI = null;
+      let perspectiveCorrected = false;
+      let cropX = 0, cropY = 0, cropW = extendedRect.w, cropH = extendedRect.h;
 
-      console.log(`   → Zentral-Crop: ${cropW}x${cropH}px (${Math.round(cropPercent*100)}% des Würfels, nur Oberseite)`);
+      try {
+        // Nutze die gespeicherte Kontur vom Würfel-Kandidaten
+        const originalContour = candidate.contour;
 
-      // Schneide zentralen Bereich aus
-      const topFaceROI = diceROI.roi(new cv.Rect(cropX, cropY, cropW, cropH));
-      const diceGray = new cv.Mat();
-      cv.cvtColor(topFaceROI, diceGray, cv.COLOR_RGBA2GRAY);
+        // Verschiebe Kontur relativ zum ausgeschnittenen ROI
+        const shiftedContour = new cv.Mat();
+        originalContour.copyTo(shiftedContour);
 
-      // EINFACHES THRESHOLDING für WEISSE Pips (nicht invertiert!)
+        // Approximiere Kontur zu Viereck
+        const peri = cv.arcLength(shiftedContour, true);
+        const approx = new cv.Mat();
+        cv.approxPolyDP(shiftedContour, approx, 0.08 * peri, true); // 8% Toleranz
+
+        console.log(`   → Lila Kontur: ${shiftedContour.rows} Punkte → ${approx.rows} Ecken nach Approximation`);
+
+        let bestQuad = null;
+
+        // Falls Viereck: Perspektiv-Transformation
+        if (approx.rows === 4) {
+          bestQuad = approx.clone();
+          console.log(`   ✓ Viereck gefunden aus lila Kontur!`);
+        }
+
+        shiftedContour.delete();
+        approx.delete();
+
+        // Falls Viereck gefunden: Perspektiv-Transformation
+        if (bestQuad) {
+          // Extrahiere die 4 Ecken und verschiebe sie relativ zum ausgeschnittenen Würfel-ROI
+          const corners = [];
+          for (let i = 0; i < 4; i++) {
+            corners.push({
+              x: bestQuad.data32S[i * 2] - extendedRect.x, // Relativ zum ROI
+              y: bestQuad.data32S[i * 2 + 1] - extendedRect.y
+            });
+          }
+
+          console.log(`   → 4 Ecken: `, corners);
+
+          // Sortiere Ecken: Top-Left, Top-Right, Bottom-Right, Bottom-Left
+          corners.sort((a, b) => a.y - b.y); // Nach Y sortieren
+          const topCorners = corners.slice(0, 2).sort((a, b) => a.x - b.x);
+          const bottomCorners = corners.slice(2, 4).sort((a, b) => a.x - b.x);
+          const sortedCorners = [...topCorners, bottomCorners[1], bottomCorners[0]]; // TL, TR, BR, BL
+
+          // Berechne Zielgröße (größte Breite/Höhe)
+          const widthTop = Math.sqrt(Math.pow(sortedCorners[1].x - sortedCorners[0].x, 2) + Math.pow(sortedCorners[1].y - sortedCorners[0].y, 2));
+          const widthBottom = Math.sqrt(Math.pow(sortedCorners[2].x - sortedCorners[3].x, 2) + Math.pow(sortedCorners[2].y - sortedCorners[3].y, 2));
+          const heightLeft = Math.sqrt(Math.pow(sortedCorners[3].x - sortedCorners[0].x, 2) + Math.pow(sortedCorners[3].y - sortedCorners[0].y, 2));
+          const heightRight = Math.sqrt(Math.pow(sortedCorners[2].x - sortedCorners[1].x, 2) + Math.pow(sortedCorners[2].y - sortedCorners[1].y, 2));
+
+          const maxWidth = Math.max(widthTop, widthBottom);
+          const maxHeight = Math.max(heightLeft, heightRight);
+          const outputSize = Math.round(Math.max(maxWidth, maxHeight));
+
+          console.log(`   → Transformiere zu ${outputSize}x${outputSize}px Quadrat`);
+
+          // Source Points (die 4 Ecken)
+          const srcPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            sortedCorners[0].x, sortedCorners[0].y, // TL
+            sortedCorners[1].x, sortedCorners[1].y, // TR
+            sortedCorners[2].x, sortedCorners[2].y, // BR
+            sortedCorners[3].x, sortedCorners[3].y  // BL
+          ]);
+
+          // Destination Points (perfektes Quadrat)
+          const dstPoints = cv.matFromArray(4, 1, cv.CV_32FC2, [
+            0, 0,
+            outputSize, 0,
+            outputSize, outputSize,
+            0, outputSize
+          ]);
+
+          // Perspektiv-Transformation Matrix
+          const M = cv.getPerspectiveTransform(srcPoints, dstPoints);
+
+          // Wende Transformation an
+          const warped = new cv.Mat();
+          cv.warpPerspective(diceROI, warped, M, new cv.Size(outputSize, outputSize));
+
+          topFaceROI = warped;
+          cropW = outputSize;
+          cropH = outputSize;
+          perspectiveCorrected = true;
+
+          console.log(`   ✅ Perspektiv-Korrektur erfolgreich!`);
+
+          // Cleanup
+          bestQuad.delete();
+          srcPoints.delete();
+          dstPoints.delete();
+          M.delete();
+        } else {
+          console.log(`   ⚠️ Kein Viereck gefunden - verwende Zentral-Crop`);
+        }
+      } catch (e) {
+        console.log(`   ⚠️ Perspektiv-Korrektur fehlgeschlagen: ${e.message}`);
+        console.error(e);
+      }
+
+      // Cleanup der gespeicherten Kontur
+      if (candidate.contour) {
+        candidate.contour.delete();
+      }
+
+      // FALLBACK: Zentral-Crop falls Perspektiv-Korrektur fehlschlägt
+      if (!topFaceROI) {
+        const cropPercent = 0.90;
+        const cropMargin = (1 - cropPercent) / 2;
+        cropX = Math.round(extendedRect.w * cropMargin);
+        cropY = Math.round(extendedRect.h * cropMargin);
+        cropW = Math.round(extendedRect.w * cropPercent);
+        cropH = Math.round(extendedRect.h * cropPercent);
+
+        console.log(`   → Zentral-Crop: ${cropW}x${cropH}px (${Math.round(cropPercent*100)}% des Würfels)`);
+        topFaceROI = diceROI.roi(new cv.Rect(cropX, cropY, cropW, cropH));
+      }
+
+      const diceGray2 = new cv.Mat();
+      cv.cvtColor(topFaceROI, diceGray2, cv.COLOR_RGBA2GRAY);
+
+      // OTSU'S THRESHOLDING - findet automatisch den optimalen Threshold-Wert
       const whiteBinary = new cv.Mat();
-      cv.threshold(
-        diceGray,
+      const thresholdValue = cv.threshold(
+        diceGray2,
         whiteBinary,
-        120, // Threshold: Alles heller als 120 wird als Pip erkannt (gesenkt von 150)
+        0, // 0 = Otsu berechnet automatisch
         255,
-        cv.THRESH_BINARY // NICHT invertiert - weiße Bereiche bleiben weiß
+        cv.THRESH_BINARY + cv.THRESH_OTSU // Otsu's Methode
       );
 
-      console.log(`   → Threshold: 120 (helle Bereiche = weiße Pips)`);
+      console.log(`   → Otsu's Threshold: ${Math.round(thresholdValue)} (automatisch berechnet)`);
+
+      // Invertiere falls nötig - wir wollen WEISSE Pips, nicht dunkle
+      // Wenn zu viel weiß erkannt wird, invertieren wir
+      const whitePixelsBefore = cv.countNonZero(whiteBinary);
+      const totalPixels = cropW * cropH;
+      const whitePercentBefore = (whitePixelsBefore / totalPixels) * 100;
+
+      // Falls mehr als 50% weiß ist, ist das Bild wahrscheinlich invertiert
+      let finalWhiteBinary = whiteBinary.clone();
+      if (whitePercentBefore > 50) {
+        cv.bitwise_not(whiteBinary, finalWhiteBinary);
+        console.log(`   → Bild invertiert (war ${whitePercentBefore.toFixed(1)}% weiß)`);
+      }
 
       // DEBUG: Zähle weiße Pixel im binären Bild
-      const whitePixelsInBinary = cv.countNonZero(whiteBinary);
-      const binaryPercent = (whitePixelsInBinary / (cropW * cropH)) * 100;
-      console.log(`   → Binär-Bild: ${binaryPercent.toFixed(1)}% weiße Pixel (${whitePixelsInBinary} von ${cropW * cropH})`);
+      const whitePixelsInBinary = cv.countNonZero(finalWhiteBinary);
+      const binaryPercent = (whitePixelsInBinary / totalPixels) * 100;
+      console.log(`   → Binär-Bild: ${binaryPercent.toFixed(1)}% weiße Pixel (${whitePixelsInBinary} von ${totalPixels})`);
 
-      // Morphologie zur Rauschunterdrückung
-      const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+      // STÄRKERE Morphologie zur Rauschunterdrückung
+      const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(4, 4));
       const cleanedBinary = new cv.Mat();
-      cv.morphologyEx(whiteBinary, cleanedBinary, cv.MORPH_OPEN, morphKernel);
+      cv.morphologyEx(finalWhiteBinary, cleanedBinary, cv.MORPH_OPEN, morphKernel);
+
+      // Zusätzliche Closing-Operation um Lücken in Pips zu schließen
+      const closingKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
+      const finalBinary = new cv.Mat();
+      cv.morphologyEx(cleanedBinary, finalBinary, cv.MORPH_CLOSE, closingKernel);
 
       // Finde Pip-Konturen
       const pipContours = new cv.MatVector();
       const pipHierarchy = new cv.Mat();
-      cv.findContours(cleanedBinary, pipContours, pipHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      cv.findContours(finalBinary, pipContours, pipHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
       let pipCount = 0;
-      const minPipArea = 15; // Gesenkt von 20 auf 15
-      const maxPipArea = 2000; // Erhöht von 1200 auf 2000
+      const minPipArea = 30; // Erhöht von 15 auf 30 (gegen Ghost-Pips)
+      const maxPipArea = 1500; // Reduziert von 2000 auf 1500
       const pipPositions = []; // Speichere Pip-Positionen zum Zeichnen
 
       console.log(`   → Gefundene Konturen im Binär-Bild: ${pipContours.size()}`);
@@ -634,8 +767,8 @@ function findPurpleDiceWithWhiteDots() {
 
         const pipCircularity = (4 * Math.PI * pipArea) / (pipPeri * pipPeri);
 
-        if (pipCircularity < 0.25) { // Gesenkt von 0.3 auf 0.25
-          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)} → Zu eckig (< 0.25)`);
+        if (pipCircularity < 0.35) { // Erhöht von 0.25 auf 0.35 (strenger für runde Formen)
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)} → Zu eckig (< 0.35)`);
           continue;
         }
 
@@ -656,9 +789,10 @@ function findPurpleDiceWithWhiteDots() {
       console.log(`   → Resultat: ${pipCount} Pips erkannt`);
       totalPips += pipCount;
 
-      // ERSTELLE MARKIERTES WÜRFEL-BILD für Seitenleiste (Side-by-Side)
+      // ERSTELLE MARKIERTES WÜRFEL-BILD für Seitenleiste (3 Bilder nebeneinander)
       const markedCanvas = document.createElement('canvas');
-      markedCanvas.width = extendedRect.w * 2 + 10; // 2x breiter + 10px Abstand
+      const numImages = 3; // Original + Binär + Corrected
+      markedCanvas.width = extendedRect.w * numImages + 20; // 3x breiter + 20px Abstände
       markedCanvas.height = extendedRect.h;
       const markedCtx = markedCanvas.getContext('2d');
 
@@ -666,30 +800,68 @@ function findPurpleDiceWithWhiteDots() {
       markedCtx.fillStyle = "white";
       markedCtx.fillRect(0, 0, markedCanvas.width, markedCanvas.height);
 
-      // Linke Hälfte: Original-Würfel
+      // Bild 1: Original-Würfel
       const originalCanvas = document.createElement('canvas');
       originalCanvas.width = extendedRect.w;
       originalCanvas.height = extendedRect.h;
       cv.imshow(originalCanvas, diceROI);
       markedCtx.drawImage(originalCanvas, 0, 0);
 
-      // Rechte Hälfte: Binär-Bild (Debug) - skaliert auf volle Würfelgröße
+      // Bild 2: Binär-Bild (Debug)
       const binaryCanvas = document.createElement('canvas');
       binaryCanvas.width = cropW;
       binaryCanvas.height = cropH;
-      cv.imshow(binaryCanvas, cleanedBinary);
+      cv.imshow(binaryCanvas, finalBinary);
 
-      // Zeichne Binär-Bild rechts (skaliert auf Würfelgröße)
-      const offsetX = extendedRect.w + 5; // 5px Abstand
-      const offsetY = (extendedRect.h - cropH) / 2;
-      markedCtx.drawImage(binaryCanvas, offsetX, offsetY, cropW, cropH);
+      const offsetX1 = extendedRect.w + 5; // 5px Abstand
+      const offsetY1 = (extendedRect.h - cropH) / 2;
+      markedCtx.drawImage(binaryCanvas, offsetX1, offsetY1, cropW, cropH);
 
-      // Zeichne Crop-Bereich auf linker Seite (rot gestrichelt)
-      markedCtx.strokeStyle = "red";
-      markedCtx.lineWidth = 2;
-      markedCtx.setLineDash([5, 5]);
-      markedCtx.strokeRect(cropX, cropY, cropW, cropH);
-      markedCtx.setLineDash([]);
+      // Bild 3: Perspektivisch korrigiertes Bild (ohne Markierungen)
+      if (perspectiveCorrected && topFaceROI) {
+        const correctedCleanCanvas = document.createElement('canvas');
+        correctedCleanCanvas.width = cropW;
+        correctedCleanCanvas.height = cropH;
+        cv.imshow(correctedCleanCanvas, topFaceROI);
+
+        const offsetX2 = extendedRect.w * 2 + 10; // Nach zweitem Bild
+        const offsetY2 = (extendedRect.h - cropH) / 2;
+        markedCtx.drawImage(correctedCleanCanvas, offsetX2, offsetY2, cropW, cropH);
+
+        // Label "CORRECTED"
+        markedCtx.fillStyle = "lime";
+        markedCtx.font = "bold 10px Arial";
+        markedCtx.strokeStyle = "black";
+        markedCtx.lineWidth = 2;
+        markedCtx.strokeText("CORRECTED", offsetX2 + 2, offsetY2 + 12);
+        markedCtx.fillText("CORRECTED", offsetX2 + 2, offsetY2 + 12);
+      } else {
+        // Fallback: Zeige "NO CORRECTION"
+        const offsetX2 = extendedRect.w * 2 + 10;
+        markedCtx.fillStyle = "#999";
+        markedCtx.font = "bold 12px Arial";
+        markedCtx.textAlign = "center";
+        markedCtx.fillText("NO", offsetX2 + extendedRect.w / 2, extendedRect.h / 2 - 10);
+        markedCtx.fillText("CORRECTION", offsetX2 + extendedRect.w / 2, extendedRect.h / 2 + 10);
+        markedCtx.textAlign = "left";
+      }
+
+      // Zeichne Crop-Bereich auf linker Seite (rot gestrichelt) - nur wenn kein Perspective Correction
+      if (!perspectiveCorrected) {
+        markedCtx.strokeStyle = "red";
+        markedCtx.lineWidth = 2;
+        markedCtx.setLineDash([5, 5]);
+        markedCtx.strokeRect(cropX, cropY, cropW, cropH);
+        markedCtx.setLineDash([]);
+      } else {
+        // Bei Perspektiv-Korrektur: Zeige grünen Text
+        markedCtx.fillStyle = "lime";
+        markedCtx.font = "bold 12px Arial";
+        markedCtx.strokeStyle = "black";
+        markedCtx.lineWidth = 2;
+        markedCtx.strokeText("PERSPECTIVE ✓", 5, extendedRect.h - 10);
+        markedCtx.fillText("PERSPECTIVE ✓", 5, extendedRect.h - 10);
+      }
 
       // Markiere alle erkannten Pips (grüne Kreise)
       markedCtx.strokeStyle = "lime";
@@ -719,6 +891,15 @@ function findPurpleDiceWithWhiteDots() {
 
       const diceImageURL = markedCanvas.toDataURL('image/png');
 
+      // Erstelle Canvas für perspektivisch korrigiertes Bild (falls vorhanden)
+      let correctedCanvasClean = null; // OHNE Pip-Markierungen
+      if (perspectiveCorrected && topFaceROI) {
+        correctedCanvasClean = document.createElement('canvas');
+        correctedCanvasClean.width = cropW;
+        correctedCanvasClean.height = cropH;
+        cv.imshow(correctedCanvasClean, topFaceROI);
+      }
+
       // Speichere für Zeichnen
       let color = "lime";
       if (area > 3000) {
@@ -732,7 +913,10 @@ function findPurpleDiceWithWhiteDots() {
         diceNumber: diceFound,
         kontourNumber: kontourNumber,
         area: area,
-        color: color
+        color: color,
+        correctedImageClean: correctedCanvasClean, // Sauberes Bild ohne Markierungen
+        perspectiveCorrected: perspectiveCorrected,
+        pipPositionsForOverlay: pipPositions.map(p => ({ x: p.x, y: p.y, w: p.width, h: p.height })) // Pip-Positionen für Overlay-Zeichnung
       });
 
       // Speichere markiertes Würfel-Bild für die Seitenleiste
@@ -748,11 +932,14 @@ function findPurpleDiceWithWhiteDots() {
 
       // Cleanup
       diceROI.delete();
-      topFaceROI.delete();
-      diceGray.delete();
+      if (topFaceROI) topFaceROI.delete();
+      diceGray2.delete();
       whiteBinary.delete();
+      finalWhiteBinary.delete();
       cleanedBinary.delete();
+      finalBinary.delete();
       morphKernel.delete();
+      closingKernel.delete();
       pipContours.delete();
       pipHierarchy.delete();
 
@@ -764,6 +951,11 @@ function findPurpleDiceWithWhiteDots() {
   // JETZT: Zeichne alles auf dem ORIGINALBILD
   // Zeichne Originalbild nochmal auf Canvas
   ctx.drawImage(currentSource, 0, 0, canvas.width, canvas.height);
+
+  // ZWEITES CANVAS: Perspektivisch korrigiertes Gesamtbild
+  canvasCorrected.width = canvas.width;
+  canvasCorrected.height = canvas.height;
+  ctxCorrected.drawImage(currentSource, 0, 0, canvas.width, canvas.height);
 
   // Zeichne Brett-Rechteck (gelb)
   ctx.strokeStyle = "yellow";
@@ -790,6 +982,36 @@ function findPurpleDiceWithWhiteDots() {
     ctx.fillText(`#${dice.diceNumber} [${dice.pipCount}]`, dice.rect.x + 5, dice.rect.y + 25);
     ctx.font = "10px Arial";
     ctx.fillText(`K${dice.kontourNumber} ${Math.round(dice.area)}px`, dice.rect.x + 5, dice.rect.y + dice.rect.height - 5);
+
+    // IM KORRIGIERTEN CANVAS: Ersetze Würfel durch korrigierte Version
+    if (dice.perspectiveCorrected && dice.correctedImageClean) {
+      // Zeichne korrigiertes Würfel-Bild an die Position des erweiterten Rechtecks
+      ctxCorrected.drawImage(
+        dice.correctedImageClean,
+        dice.extendedRect.x,
+        dice.extendedRect.y,
+        dice.extendedRect.w,
+        dice.extendedRect.h
+      );
+
+      // Zeichne grünen Rahmen um korrigierten Würfel
+      ctxCorrected.strokeStyle = "lime";
+      ctxCorrected.lineWidth = 3;
+      ctxCorrected.strokeRect(
+        dice.extendedRect.x,
+        dice.extendedRect.y,
+        dice.extendedRect.w,
+        dice.extendedRect.h
+      );
+
+      // Label mit Pip-Count
+      ctxCorrected.fillStyle = "lime";
+      ctxCorrected.font = "bold 20px Arial";
+      ctxCorrected.strokeStyle = "black";
+      ctxCorrected.lineWidth = 3;
+      ctxCorrected.strokeText(`#${dice.diceNumber} [${dice.pipCount}]`, dice.extendedRect.x + 5, dice.extendedRect.y + 25);
+      ctxCorrected.fillText(`#${dice.diceNumber} [${dice.pipCount}]`, dice.extendedRect.x + 5, dice.extendedRect.y + 25);
+    }
   }
 
   // Cleanup
