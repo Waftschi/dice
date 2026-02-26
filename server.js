@@ -10,7 +10,8 @@ const mimeTypes = {
   '.css': 'text/css',
   '.json': 'application/json',
   '.png': 'image/png',
-  '.jpg': 'image/jpg',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon'
@@ -38,7 +39,12 @@ const server = http.createServer((req, res) => {
       }
     } else {
       res.writeHead(200, { 'Content-Type': contentType });
-      res.end(content, 'utf-8');
+      // Für Binärdateien (Bilder) kein encoding angeben
+      if (contentType.startsWith('image/')) {
+        res.end(content);
+      } else {
+        res.end(content, 'utf-8');
+      }
     }
   });
 });
