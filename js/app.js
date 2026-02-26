@@ -562,35 +562,46 @@ function findPurpleDiceWithWhiteDots() {
     console.log(`\n[WÜRFEL #${diceFound}] Analysiere ausgeschnittenes Bild (${extendedRect.w}x${extendedRect.h}px)...`);
 
     try {
-      // Schneide Würfel aus
+      // Schneide Würfel aus (vollständig für Anzeige)
       const diceROI = src.roi(new cv.Rect(extendedRect.x, extendedRect.y, extendedRect.w, extendedRect.h));
 
-      // SPEICHERE WÜRFEL-BILD für Anzeige
-      const diceCanvas = document.createElement('canvas');
-      diceCanvas.width = extendedRect.w;
-      diceCanvas.height = extendedRect.h;
-      cv.imshow(diceCanvas, diceROI);
-      const diceImageURL = diceCanvas.toDataURL('image/png');
+      // ZENTRAL-CROP: Nehme nur innere 90% für Pip-Analyse (nur Oberseite)
+      const cropPercent = 0.90; // 90% des Bereichs (vergrößert von 75%)
+      const cropMargin = (1 - cropPercent) / 2; // 5% Rand auf jeder Seite
 
+      const cropX = Math.round(extendedRect.w * cropMargin);
+      const cropY = Math.round(extendedRect.h * cropMargin);
+      const cropW = Math.round(extendedRect.w * cropPercent);
+      const cropH = Math.round(extendedRect.h * cropPercent);
+
+      console.log(`   → Zentral-Crop: ${cropW}x${cropH}px (${Math.round(cropPercent*100)}% des Würfels, nur Oberseite)`);
+
+      // Schneide zentralen Bereich aus
+      const topFaceROI = diceROI.roi(new cv.Rect(cropX, cropY, cropW, cropH));
       const diceGray = new cv.Mat();
-      cv.cvtColor(diceROI, diceGray, cv.COLOR_RGBA2GRAY);
+      cv.cvtColor(topFaceROI, diceGray, cv.COLOR_RGBA2GRAY);
 
-      // ADAPTIVE THRESHOLDING für bessere Pip-Erkennung
-      const adaptiveBinary = new cv.Mat();
-      cv.adaptiveThreshold(
+      // EINFACHES THRESHOLDING für WEISSE Pips (nicht invertiert!)
+      const whiteBinary = new cv.Mat();
+      cv.threshold(
         diceGray,
-        adaptiveBinary,
+        whiteBinary,
+        120, // Threshold: Alles heller als 120 wird als Pip erkannt (gesenkt von 150)
         255,
-        cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv.THRESH_BINARY_INV,
-        11, // Blockgröße
-        2   // Konstante
+        cv.THRESH_BINARY // NICHT invertiert - weiße Bereiche bleiben weiß
       );
 
+      console.log(`   → Threshold: 120 (helle Bereiche = weiße Pips)`);
+
+      // DEBUG: Zähle weiße Pixel im binären Bild
+      const whitePixelsInBinary = cv.countNonZero(whiteBinary);
+      const binaryPercent = (whitePixelsInBinary / (cropW * cropH)) * 100;
+      console.log(`   → Binär-Bild: ${binaryPercent.toFixed(1)}% weiße Pixel (${whitePixelsInBinary} von ${cropW * cropH})`);
+
       // Morphologie zur Rauschunterdrückung
-      const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(2, 2));
+      const morphKernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
       const cleanedBinary = new cv.Mat();
-      cv.morphologyEx(adaptiveBinary, cleanedBinary, cv.MORPH_OPEN, morphKernel);
+      cv.morphologyEx(whiteBinary, cleanedBinary, cv.MORPH_OPEN, morphKernel);
 
       // Finde Pip-Konturen
       const pipContours = new cv.MatVector();
@@ -598,17 +609,23 @@ function findPurpleDiceWithWhiteDots() {
       cv.findContours(cleanedBinary, pipContours, pipHierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
       let pipCount = 0;
-      const minPipArea = 10;
-      const maxPipArea = 800;
+      const minPipArea = 15; // Gesenkt von 20 auf 15
+      const maxPipArea = 2000; // Erhöht von 1200 auf 2000
+      const pipPositions = []; // Speichere Pip-Positionen zum Zeichnen
 
-      console.log(`   → Gefundene Konturen: ${pipContours.size()}`);
+      console.log(`   → Gefundene Konturen im Binär-Bild: ${pipContours.size()}`);
 
       for (let p = 0; p < pipContours.size(); p++) {
         const pipCnt = pipContours.get(p);
         const pipArea = cv.contourArea(pipCnt);
 
-        if (pipArea < minPipArea || pipArea > maxPipArea) {
-          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} → Außerhalb ${minPipArea}-${maxPipArea}`);
+        if (pipArea < minPipArea) {
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} → Zu klein (< ${minPipArea})`);
+          continue;
+        }
+
+        if (pipArea > maxPipArea) {
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} → Zu groß (> ${maxPipArea})`);
           continue;
         }
 
@@ -617,17 +634,90 @@ function findPurpleDiceWithWhiteDots() {
 
         const pipCircularity = (4 * Math.PI * pipArea) / (pipPeri * pipPeri);
 
-        if (pipCircularity < 0.3) {
-          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)} → Zu eckig`);
+        if (pipCircularity < 0.25) { // Gesenkt von 0.3 auf 0.25
+          console.log(`      Kontur ${p}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)} → Zu eckig (< 0.25)`);
           continue;
         }
 
         pipCount++;
+
+        // Speichere Pip-Position (relativ zum Crop-Bereich)
+        const pipRect = cv.boundingRect(pipCnt);
+        pipPositions.push({
+          x: pipRect.x + pipRect.width / 2,
+          y: pipRect.y + pipRect.height / 2,
+          width: pipRect.width,
+          height: pipRect.height
+        });
+
         console.log(`      ✓ Pip ${pipCount}: Area=${Math.round(pipArea)} Circ=${pipCircularity.toFixed(2)}`);
       }
 
       console.log(`   → Resultat: ${pipCount} Pips erkannt`);
       totalPips += pipCount;
+
+      // ERSTELLE MARKIERTES WÜRFEL-BILD für Seitenleiste (Side-by-Side)
+      const markedCanvas = document.createElement('canvas');
+      markedCanvas.width = extendedRect.w * 2 + 10; // 2x breiter + 10px Abstand
+      markedCanvas.height = extendedRect.h;
+      const markedCtx = markedCanvas.getContext('2d');
+
+      // Hintergrund weiß
+      markedCtx.fillStyle = "white";
+      markedCtx.fillRect(0, 0, markedCanvas.width, markedCanvas.height);
+
+      // Linke Hälfte: Original-Würfel
+      const originalCanvas = document.createElement('canvas');
+      originalCanvas.width = extendedRect.w;
+      originalCanvas.height = extendedRect.h;
+      cv.imshow(originalCanvas, diceROI);
+      markedCtx.drawImage(originalCanvas, 0, 0);
+
+      // Rechte Hälfte: Binär-Bild (Debug) - skaliert auf volle Würfelgröße
+      const binaryCanvas = document.createElement('canvas');
+      binaryCanvas.width = cropW;
+      binaryCanvas.height = cropH;
+      cv.imshow(binaryCanvas, cleanedBinary);
+
+      // Zeichne Binär-Bild rechts (skaliert auf Würfelgröße)
+      const offsetX = extendedRect.w + 5; // 5px Abstand
+      const offsetY = (extendedRect.h - cropH) / 2;
+      markedCtx.drawImage(binaryCanvas, offsetX, offsetY, cropW, cropH);
+
+      // Zeichne Crop-Bereich auf linker Seite (rot gestrichelt)
+      markedCtx.strokeStyle = "red";
+      markedCtx.lineWidth = 2;
+      markedCtx.setLineDash([5, 5]);
+      markedCtx.strokeRect(cropX, cropY, cropW, cropH);
+      markedCtx.setLineDash([]);
+
+      // Markiere alle erkannten Pips (grüne Kreise)
+      markedCtx.strokeStyle = "lime";
+      markedCtx.fillStyle = "rgba(0, 255, 0, 0.3)";
+      markedCtx.lineWidth = 2;
+
+      for (let pip of pipPositions) {
+        // Pip-Position ist relativ zum Crop-Bereich, konvertiere zu vollem Würfel-Bild
+        const pipX = cropX + pip.x;
+        const pipY = cropY + pip.y;
+        const radius = Math.max(pip.width, pip.height) / 2 + 2;
+
+        // Zeichne Kreis um Pip
+        markedCtx.beginPath();
+        markedCtx.arc(pipX, pipY, radius, 0, 2 * Math.PI);
+        markedCtx.fill();
+        markedCtx.stroke();
+      }
+
+      // Pip-Anzahl oben links
+      markedCtx.fillStyle = "lime";
+      markedCtx.font = "bold 16px Arial";
+      markedCtx.strokeStyle = "black";
+      markedCtx.lineWidth = 3;
+      markedCtx.strokeText(`${pipCount} Pips`, 5, 20);
+      markedCtx.fillText(`${pipCount} Pips`, 5, 20);
+
+      const diceImageURL = markedCanvas.toDataURL('image/png');
 
       // Speichere für Zeichnen
       let color = "lime";
@@ -645,7 +735,7 @@ function findPurpleDiceWithWhiteDots() {
         color: color
       });
 
-      // Speichere Würfel-Bild für die Seitenleiste
+      // Speichere markiertes Würfel-Bild für die Seitenleiste
       extractedDiceImages.push({
         id: diceFound,
         image: diceImageURL,
@@ -658,8 +748,9 @@ function findPurpleDiceWithWhiteDots() {
 
       // Cleanup
       diceROI.delete();
+      topFaceROI.delete();
       diceGray.delete();
-      adaptiveBinary.delete();
+      whiteBinary.delete();
       cleanedBinary.delete();
       morphKernel.delete();
       pipContours.delete();
